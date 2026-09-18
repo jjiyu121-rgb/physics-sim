@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>전자기 유도 위치 연동 시뮬레이터</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f4f7f6; color: #333; }
+    h1 { text-align: center; color: #2c3e50; }
+    .container { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1200px; margin: 0 auto; }
+    .panel { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); flex: 1; min-width: 320px; }
+    
+    .control-group { margin-bottom: 15px; }
+    label { font-weight: bold; display: block; margin-bottom: 5px; }
+    select, button { width: 100%; padding: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 16px; margin-top: 5px; }
+    button { background-color: #3498db; color: white; border: none; cursor: pointer; }
+    button:hover { background-color: #2980b9; }
+    button:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+    .btn-reset { background-color: #e74c3c; margin-top: 10px; }
+    .btn-reset:hover { background-color: #c0392b; }
+
+    #simCanvas { background-color: #fafafa; border: 1px solid #e0e0e0; border-radius: 5px; display: block; margin: 0 auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+    th { background-color: #f2f2f2; }
+  </style>
+</head>
+<body>
+
+  <h1>전자기 유도 실시간 그래프 연동 시뮬레이터</h1>
+
+  <div class="container">
+    <div class="panel">
+      <h2>실험 장치 조작부</h2>
+      <div class="control-group">
+        <label for="magnetCount">자석의 세기 (자석 개수 선택):</label>
+        <select id="magnetCount">
+          <option value="1">1개 (파란색)</option>
+          <option value="2">2개 (보라색)</option>
+          <option value="3">3개 (빨간색)</option>
+        </select>
+      </div>
+
+      <button id="startBtn" onclick="runSimulation()">낙하 시작</button>
+      <button class="btn-reset" onclick="resetSimulation()">리셋</button>
+
+      <h3 style="margin-top: 25px;">실험 시각화 영역</h3>
+      <canvas id="simCanvas" width="350" height="300"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>실시간 연동 그래프</h2>
+      <canvas id="chartCanvas" width="400" height="250"></canvas>
+
+      <h3>실험 결과 표</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>자석 개수</th>
+            <th>최댓값 (V)</th>
+            <th>최솟값 (V)</th>
+          </tr>
+        </thead>
+        <tbody id="resultTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const simCanvas = document.getElementById('simCanvas');
+    const ctx = simCanvas.getContext('2d');
+    
+    let isRunning = false;
+    let timerId = null;
+    
+    const startY = 30;
+    const endY = 250;
+    const coilY = 140;
+    
+    const colors = {
+      1: { name: '1개', color: '#3498db' },
+      2: { name: '2개', color: '#9b59b6' },
+      3: { name: '3개', color: '#e74c3c' }
+    };
+
+    // Chart.js 선 그래프 세팅
+    const chartCtx = document.getElementById('chartCanvas').getContext('2d');
+    const emfChart = new Chart(chartCtx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: '1개 (파란색)', data: [], borderColor: colors[1].color, fill: false, tension: 0.3, pointRadius: 2 },
+          { label: '2개 (보라색)', data: [], borderColor: colors[2].color, fill: false, tension: 0.3, pointRadius: 2 },
+          { label: '3개 (빨간색)', data: [], borderColor: colors[3].color, fill: false, tension: 0.3, pointRadius: 2 }
+        ]
+      },
+      options: {
+        responsive: true,
+        animation: false, // 연동을 위해 차트 내부 애니메이션 OFF
+        scales: {
+          x: { title: { display: true, text: '시간 (s)' } },
+          y: { title: { display: true, text: '유도 기전력 (V)' }, min: -10, max: 10 }
+        }
+      }
+    });
+
+    // 캔버스에 실험 장치 및 자석 그리기
+    function drawScene(currentY, count) {
+      ctx.clearRect(0, 0, simCanvas.width, simCanvas.height);
+
+      // 코일
+      ctx.fillStyle = '#d35400';
+      for (let i = -3; i <= 3; i++) {
+        ctx.fillRect(120, coilY + (i * 8), 110, 5);
+      }
+
+      // 자석
+      const magnetHeight = 25 * count;
+      ctx.fillStyle = colors[count].color;
+      ctx.fillRect(150, currentY, 50, magnetHeight);
+      
+      // N/S 극
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 14px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('N', 175, currentY + 15);
+      ctx.fillText('S', 175, currentY + magnetHeight - 5);
+    }
+
+    drawScene(startY, 1);
+
+    function runSimulation() {
+      if (isRunning) return;
+      
+      const count = parseInt(document.getElementById('magnetCount').value);
+      const datasetIndex = count - 1;
+
+      // 선택한 데이터셋 초기화
+      emfChart.data.datasets[datasetIndex].data = [];
+      
+      let currentY = startY;
+      let time = 0;
+      const speed = 3;
+      const baseEMF = 2.8;
+
+      let currentMax = -Infinity;
+      let currentMin = Infinity;
+
+      isRunning = true;
+      document.getElementById('startBtn').disabled = true;
+
+      // 자석 이동 프레임 단위로 그래프에 직접 연동
+      timerId = setInterval(() => {
+        currentY += speed;
+        time += 0.03;
+
+        // 자석의 현재 Y 위치와 코일 위치 관계 기반 기전력 계산
+        const magnetCenter = currentY + (25 * count) / 2;
+        const distance = magnetCenter - coilY;
+        
+        let emf = 0;
+        if (Math.abs(distance) < 50) {
+          emf = -Math.sin((distance / 50) * Math.PI) * (baseEMF * count);
+        }
+
+        if (emf > currentMax) currentMax = emf;
+        if (emf < currentMin) currentMin = emf;
+
+        // 1. 애니메이션 캔버스 업데이트
+        drawScene(currentY, count);
+
+        // 2. 그래프 데이터 연동 업데이트
+        const timeStr = time.toFixed(2);
+        if (!emfChart.data.labels.includes(timeStr)) {
+          emfChart.data.labels.push(timeStr);
+        }
+        
+        emfChart.data.datasets[datasetIndex].data.push(emf);
+        emfChart.update('none'); // 화면 갱신만 수행
+
+        // 낙하 완료시 종료
+        if (currentY >= endY) {
+          clearInterval(timerId);
+          isRunning = false;
+          document.getElementById('startBtn').disabled = false;
+          updateTable(count, currentMax.toFixed(2), currentMin.toFixed(2));
+        }
+      }, 30);
+    }
+
+    function updateTable(count, maxV, minV) {
+      const tableBody = document.getElementById('resultTableBody');
+      const existingRow = document.getElementById(`row-magnet-${count}`);
+      
+      if (existingRow) {
+        existingRow.children[1].innerText = maxV;
+        existingRow.children[2].innerText = minV;
+      } else {
+        const row = document.createElement('tr');
+        row.id = `row-magnet-${count}`;
+        row.innerHTML = `
+          <td style="color:${colors[count].color}; font-weight:bold;">${colors[count].name}</td>
+          <td>${maxV}</td>
+          <td>${minV}</td>
+        `;
+        tableBody.appendChild(row);
+      }
+    }
+
+    function resetSimulation() {
+      if (timerId) clearInterval(timerId);
+      isRunning = false;
+      document.getElementById('startBtn').disabled = false;
+
+      const count = parseInt(document.getElementById('magnetCount').value);
+      drawScene(startY, count);
+
+      emfChart.data.labels = [];
+      emfChart.data.datasets.forEach(ds => ds.data = []);
+      emfChart.update();
+
+      document.getElementById('resultTableBody').innerHTML = '';
+    }
+  </script>
+</body>
+</html>
